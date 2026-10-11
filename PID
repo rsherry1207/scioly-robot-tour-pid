@@ -1,0 +1,168 @@
+// === Motor Pins ===
+const int enA = 10;
+const int in1 = 9;
+const int in2 = 8;
+
+const int enB = 11;
+const int in3 = 12;
+const int in4 = 13;
+
+// === Encoder Pins ===
+const int encA = 2;
+const int encB = 3;
+const int encC = 4;
+const int encD = 7;
+
+// === PID Constants ===
+float Kp = 1.3;
+float Ki = 0.0;
+float Kd = 0.05;
+
+// === PID Variables ===
+float error = 0;
+float previousError = 0;
+float integral = 0;
+float derivative = 0;
+
+// === Motion Tracking ===
+volatile long ticksLeft = 0;
+volatile long ticksRight = 0;
+long lastTicksLeft = 0;
+long lastTicksRight = 0;
+float distance = 0.0;
+
+// === Constants ===
+const double wheelDiameter = 2.75;  // inches
+const double PPR = 515.0;           // pulses per revolution
+const int loopInterval = 20;        // milliseconds
+
+void setup() {
+  // Motor setup
+  pinMode(enA, OUTPUT); pinMode(in1, OUTPUT); pinMode(in2, OUTPUT);
+  pinMode(enB, OUTPUT); pinMode(in3, OUTPUT); pinMode(in4, OUTPUT);
+
+  // Encoder setup
+  pinMode(encA, INPUT); pinMode(encB, INPUT);
+  pinMode(encC, INPUT); pinMode(encD, INPUT);
+
+  attachInterrupt(digitalPinToInterrupt(encA), encoderLeftISR, RISING);
+  attachInterrupt(digitalPinToInterrupt(encC), encoderRightISR, RISING);
+
+  Serial.begin(115200);
+}
+
+void loop() {
+  /*
+  move(12);   // Move forward 12 ft
+  delay(1000);
+  move(-12);  // Move backward 12 ft
+  while (true);
+  */
+}
+
+// === Movement Command ===
+void move(float targetDistance) {
+  ticksLeft = 0; ticksRight = 0;
+  lastTicksLeft = 0; lastTicksRight = 0;
+  distance = 0;
+  error = 0; integral = 0; previousError = 0;
+
+  unsigned long lastTime = millis();
+  unsigned long stallStartTime = 0;
+  bool stalling = false;
+
+  while (true) {
+    unsigned long currentTime = millis();
+    if (currentTime - lastTime >= loopInterval) {
+      float timeDiffSec = (currentTime - lastTime) / 1000.0;
+
+      long currentTicksLeft, currentTicksRight;
+      noInterrupts();
+      currentTicksLeft = ticksLeft;
+      currentTicksRight = ticksRight;
+      interrupts();
+
+      long tickDiffLeft = currentTicksLeft - lastTicksLeft;
+      long tickDiffRight = currentTicksRight - lastTicksRight;
+      lastTicksLeft = currentTicksLeft;
+      lastTicksRight = currentTicksRight;
+
+      float ticksPerSecLeft = tickDiffLeft / timeDiffSec;
+      float ticksPerSecRight = tickDiffRight / timeDiffSec;
+      float revsLeft = ticksPerSecLeft / PPR;
+      float revsRight = ticksPerSecRight / PPR;
+
+      float avgRevs = (revsLeft + revsRight) / 2.0;
+
+      if (abs(avgRevs) > 0.001) {
+        distance += (wheelDiameter * PI * avgRevs) / 12.0;  // feet
+      }
+
+      Serial.print("Distance: ");
+      Serial.println(distance);
+
+      error = targetDistance - distance;
+      if (abs(error) < 0.01) {
+        stopMotors();
+        Serial.println("Target reached.");
+        return;
+      }
+
+      integral += error * timeDiffSec;
+      derivative = (error - previousError) / timeDiffSec;
+      float output = Kp * error + Ki * integral + Kd * derivative;
+      previousError = error;
+
+      int motorOutput = constrain(abs(output * 255), 0, 255);
+
+      if (output > 0) {
+        moveForward(motorOutput);
+      } else {
+        moveBackward(motorOutput);
+      }
+
+      // Stall detection
+      if (motorOutput < 15) {
+        if (!stalling) {
+          stalling = true;
+          stallStartTime = currentTime;
+        } else if (currentTime - stallStartTime > 500) {
+          stopMotors();
+          Serial.println("Stalled or close enough. Exiting move().");
+          return;
+        }
+      } else {
+        stalling = false;
+      }
+
+      lastTime = currentTime;
+    }
+  }
+}
+
+// === Motor Control ===
+void moveForward(int motorOutput) {
+  digitalWrite(in1, HIGH); digitalWrite(in2, LOW); analogWrite(enA, motorOutput);
+  digitalWrite(in3, HIGH); digitalWrite(in4, LOW); analogWrite(enB, motorOutput);
+}
+
+void moveBackward(int motorOutput) {
+  digitalWrite(in1, LOW); digitalWrite(in2, HIGH); analogWrite(enA, motorOutput);
+  digitalWrite(in3, LOW); digitalWrite(in4, HIGH); analogWrite(enB, motorOutput);
+}
+
+void stopMotors() {
+  analogWrite(enA, 0);
+  analogWrite(enB, 0);
+}
+
+// === Encoder ISRs ===
+void encoderLeftISR() {
+  if (digitalRead(encA) == digitalRead(encB)) ticksLeft++;
+  else ticksLeft--;
+}
+
+void encoderRightISR() {
+  if (digitalRead(encC) == digitalRead(encD)) ticksRight++;
+  else ticksRight--;
+}
